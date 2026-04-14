@@ -1,0 +1,1 @@
+# Subpacote de utilitários compartilhados.
