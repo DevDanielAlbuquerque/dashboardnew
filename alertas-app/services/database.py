@@ -1,15 +1,13 @@
-# Bibliotecas de terceiros
-import os  # Leitura de variaveis de ambiente como fallback seguro
-import pandas as pd  # Manipulação de dados tabulares
-import pymssql  # Conexão com SQL Server
-import streamlit as st  # Acesso aos secrets e mensagens na interface
+import os
+import pandas as pd
+import requests
+import streamlit as st
 
-# Constantes compartilhadas do projeto
-from shared.constants import TABELA_ALERTAS 
+from shared.constants import TABELA_ALERTAS
 
 
 def _obter_configuracao(chave):
-    """Obtém uma configuracao do Streamlit secrets ou do ambiente."""
+    """Obtém uma configuração do Streamlit secrets ou do ambiente."""
     try:
         valor = st.secrets.get(chave)
         if valor:
@@ -20,182 +18,164 @@ def _obter_configuracao(chave):
     return os.getenv(chave)
 
 
+def _obter_api_url():
+    api_url = _obter_configuracao("API_URL")
+
+    if not api_url:
+        st.error("Falta a configuração API_URL nos secrets do Streamlit.")
+        return None
+
+    return api_url.rstrip("/")
+
+
+def _montar_headers():
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    api_key = _obter_configuracao("API_KEY")
+    if api_key:
+        headers["x-functions-key"] = api_key
+
+    return headers
+
+
+def listar_alertas():
+    """
+    Busca os alertas pela API e retorna um DataFrame.
+    """
+    api_url = _obter_api_url()
+    if not api_url:
+        return pd.DataFrame()
+
+    try:
+        response = requests.get(
+            f"{api_url}/listar_alertas",
+            headers=_montar_headers(),
+            timeout=30
+        )
+        response.raise_for_status()
+
+        dados = response.json()
+
+        if isinstance(dados, list):
+            return pd.DataFrame(dados)
+
+        if isinstance(dados, dict):
+            if "data" in dados and isinstance(dados["data"], list):
+                return pd.DataFrame(dados["data"])
+            return pd.DataFrame([dados])
+
+        return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Erro ao buscar alertas na API: {e}")
+        return pd.DataFrame()
+
+
+def inserir_alerta(alerta: dict) -> bool:
+    """
+    Envia um novo alerta para a API.
+    """
+    api_url = _obter_api_url()
+    if not api_url:
+        return False
+
+    try:
+        response = requests.post(
+            f"{api_url}/criar_alerta",
+            headers=_montar_headers(),
+            json=alerta,
+            timeout=30
+        )
+        response.raise_for_status()
+        return True
+
+    except Exception as e:
+        st.error(f"Erro ao criar alerta via API: {e}")
+        return False
+
+
+def atualizar_alerta(alerta_id: int, dados_alerta: dict) -> bool:
+    """
+    Atualiza um alerta existente via API.
+    """
+    api_url = _obter_api_url()
+    if not api_url:
+        return False
+
+    payload = {"id": alerta_id, **dados_alerta}
+
+    try:
+        response = requests.put(
+            f"{api_url}/atualizar_alerta",
+            headers=_montar_headers(),
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        return True
+
+    except Exception as e:
+        st.error(f"Erro ao atualizar alerta via API: {e}")
+        return False
+
+
+def excluir_alerta(alerta_id: int) -> bool:
+    """
+    Exclui um alerta via API.
+    """
+    api_url = _obter_api_url()
+    if not api_url:
+        return False
+
+    try:
+        response = requests.delete(
+            f"{api_url}/deletar_alerta?id={alerta_id}",
+            headers=_montar_headers(),
+            timeout=30
+        )
+        response.raise_for_status()
+        return True
+
+    except Exception as e:
+        st.error(f"Erro ao excluir alerta via API: {e}")
+        return False
+
+
+def concluir_alerta(alerta_id: int) -> bool:
+    """
+    Marca um alerta como concluído via API.
+    """
+    api_url = _obter_api_url()
+    if not api_url:
+        return False
+
+    try:
+        response = requests.patch(
+            f"{api_url}/concluir_alerta",
+            headers=_montar_headers(),
+            json={"id": alerta_id},
+            timeout=30
+        )
+        response.raise_for_status()
+        return True
+
+    except Exception as e:
+        st.error(f"Erro ao concluir alerta via API: {e}")
+        return False
+
+
+def carregar_alertas():
+    """
+    Mantém compatibilidade com código antigo que já chama essa função.
+    """
+    return listar_alertas()
+
+
 def conectar():
     """
-    Cria e retorna uma conexão com o banco de dados.
-
-    Returns:
-        pymssql.Connection | None: conexão ativa ou None em caso de erro.
+    Mantido apenas por compatibilidade com partes antigas do projeto.
+    Não há mais conexão direta com o banco no Streamlit.
     """
-    servidor = _obter_configuracao("DB_SERVER")
-    usuario = _obter_configuracao("DB_USER")
-    senha = _obter_configuracao("DB_PASSWORD")
-    banco = _obter_configuracao("DB_NAME")
-
-    if not all([servidor, usuario, senha, banco]):
-        st.error("Faltam variaveis de configuracao do banco de dados.")
-        return None
-
-    try:
-        return pymssql.connect(
-            server=servidor,
-            user=usuario,
-            password=senha,
-            database=banco
-        )
-    except Exception as e:
-        st.error(f"Erro na conexão com o banco: {e}")
-        return None
-
-
-def executar_consulta(query, mensagem_erro="Erro ao executar consulta"):
-    """
-    Executa uma consulta SQL e retorna o resultado em DataFrame.
-
-    Args:
-        query (str): instrução SQL a ser executada.
-        mensagem_erro (str): mensagem exibida em caso de falha.
-
-    Returns:
-        pd.DataFrame: resultado da consulta ou DataFrame vazio.
-    """
-    conn = conectar()
-    if conn is None:
-        return pd.DataFrame()
-
-    try:
-        return pd.read_sql(query, conn)
-    except Exception as e:
-        st.error(f"{mensagem_erro}: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-
-def normalizar_colunas_de_data(df):
-    """
-    Converte colunas de data para datetime quando existirem no DataFrame.
-
-    Args:
-        df (pd.DataFrame): dados carregados do banco.
-
-    Returns:
-        pd.DataFrame: DataFrame com colunas de data normalizadas.
-    """
-    if "data_vencimento" in df.columns:
-        df["data_vencimento"] = pd.to_datetime(df["data_vencimento"], errors="coerce")
-
-    if "data_lembrete" in df.columns:
-        df["data_lembrete"] = pd.to_datetime(df["data_lembrete"], errors="coerce")
-
-    return df
-
-
-def adicionar_status_visual(df):
-    """
-    Adiciona uma coluna visual com base na data de vencimento.
-
-    Regras:
-    - vencido: 🔴 Atrasado
-    - vence hoje: 🟡 Hoje
-    - demais casos: 🟢 No prazo
-
-    Args:
-        df (pd.DataFrame): DataFrame com a coluna data_vencimento.
-
-    Returns:
-        pd.DataFrame: DataFrame com a coluna status_visual.
-    """
-    if df.empty:
-        return df
-
-    hoje = pd.Timestamp.today().normalize()
-
-    def calcular_status_visual(row):
-        data_vencimento = row.get("data_vencimento")
-
-        if pd.notna(data_vencimento):
-            data_vencimento = data_vencimento.normalize()
-
-            if data_vencimento < hoje:
-                return "🔴 Atrasado"
-            if data_vencimento == hoje:
-                return "🟡 Hoje"
-
-        return "🟢 No prazo"
-
-    df["status_visual"] = df.apply(calcular_status_visual, axis=1)
-    return df
-
-
-def carregar_dados():
-    """
-    Carrega os alertas ainda não concluídos e aplica tratamentos básicos.
-
-    Returns:
-        pd.DataFrame: alertas carregados com datas tratadas e status visual.
-    """
-    query = f"""
-        SELECT *
-        FROM {TABELA_ALERTAS}
-        WHERE status <> 'CONCLUIDO'
-    """
-
-    df = executar_consulta(query, "Erro ao carregar dados")
-
-    if df.empty:
-        return df
-
-    df = normalizar_colunas_de_data(df)
-    df = adicionar_status_visual(df)
-
-    return df
-
-
-def carregar_valores_distintos(nome_coluna):
-    """
-    Retorna valores distintos e não vazios de uma coluna da tabela principal.
-
-    Args:
-        nome_coluna (str): nome da coluna consultada.
-
-    Returns:
-        list: lista de valores distintos.
-    """
-    query = f"""
-        SELECT DISTINCT {nome_coluna}
-        FROM {TABELA_ALERTAS}
-        WHERE {nome_coluna} IS NOT NULL
-          AND LTRIM(RTRIM({nome_coluna})) <> ''
-        ORDER BY {nome_coluna}
-    """
-
-    df = executar_consulta(
-        query,
-        f"Erro ao carregar valores da coluna '{nome_coluna}'"
-    )
-
-    if df.empty or nome_coluna not in df.columns:
-        return []
-
-    return df[nome_coluna].dropna().tolist()
-
-
-def carregar_departamentos():
-    """
-    Carrega a lista de departamentos disponíveis.
-
-    Returns:
-        list: departamentos distintos e não vazios.
-    """
-    return carregar_valores_distintos("departamento")
-
-
-def carregar_categorias():
-    """
-    Carrega a lista de categorias disponíveis.
-
-    Returns:
-        list: categorias distintas e não vazias.
-    """
-    return carregar_valores_distintos("categoria")
+    return None
