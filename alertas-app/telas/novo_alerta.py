@@ -1,11 +1,9 @@
-# ====================== telas/novo_alerta.py ======================
-
 import streamlit as st
 
 from services.database import (
     carregar_categorias,
     carregar_departamentos,
-    conectar,
+    inserir_alerta,
 )
 
 
@@ -41,11 +39,9 @@ def tela_novo_alerta():
     """
 
     # ===== ESTILO LOCAL =====
-    # Aplica os estilos específicos desta tela.
     carregar_css()
 
     # ===== ESTADO INICIAL =====
-    # Controla o reset dos campos após salvar um novo alerta.
     if "force_reset" not in st.session_state:
         st.session_state["force_reset"] = 0
 
@@ -55,7 +51,6 @@ def tela_novo_alerta():
     st.subheader("➕ Criar novo alerta")
 
     # ===== DADOS AUXILIARES =====
-    # Carrega listas usadas nos campos de seleção.
     departamentos = carregar_departamentos()
     categorias = carregar_categorias()
 
@@ -63,7 +58,6 @@ def tela_novo_alerta():
     categorias_opcoes = categorias + ["➕ Adicionar nova categoria"]
 
     # ===== FORMULÁRIO =====
-    # Permite selecionar um valor existente ou informar um novo.
     departamento_selecionado = st.selectbox(
         "Departamento",
         departamentos_opcoes,
@@ -103,50 +97,48 @@ def tela_novo_alerta():
         key=f"data_lembrete_{reset_key}"
     )
 
-    # Exibe um resumo visual das datas informadas.
     st.caption(f"📅 Vencimento: {data_vencimento.strftime('%d/%m/%Y')}")
     st.caption(f"🔔 Início do alerta: {data_lembrete.strftime('%d/%m/%Y')}")
 
     # ===== AÇÃO DE SALVAR =====
     if st.button("Salvar", key=f"salvar_{reset_key}"):
 
-        # Valida os campos obrigatórios antes de inserir no banco.
-        if not departamento or not categoria or not descricao:
-            st.warning("Preencha Departamento, Categoria e Descrição.")
+        # Validações
+        if not departamento or not str(departamento).strip():
+            st.warning("Preencha o Departamento.")
             return
 
-        conn = conectar()
-        cursor = conn.cursor()
+        if not categoria or not str(categoria).strip():
+            st.warning("Preencha a Categoria.")
+            return
 
-        cursor.execute("""
-            INSERT INTO alertas_dev (
-                departamento,
-                categoria,
-                descricao,
-                observacoes,
-                data_vencimento,
-                data_lembrete,
-                canal,
-                status
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, 'TELEGRAM', 'PENDENTE')
-        """, (
-            departamento.strip(),
-            categoria.strip(),
-            descricao.strip(),
-            observacao.strip() if observacao else "",
-            data_vencimento,
-            data_lembrete
-        ))
+        if not descricao or not str(descricao).strip():
+            st.warning("Preencha a Descrição.")
+            return
 
-        conn.commit()
-        conn.close()
+        if data_lembrete > data_vencimento:
+            st.warning("A data de início do alerta não pode ser maior que a data de vencimento.")
+            return
 
-        # Reinicia os campos para a próxima abertura do formulário.
+        payload = {
+            "departamento": departamento.strip(),
+            "categoria": categoria.strip(),
+            "descricao": descricao.strip(),
+            "observacoes": observacao.strip() if observacao else "",
+            "data_vencimento": data_vencimento.strftime("%Y-%m-%d"),
+            "data_lembrete": data_lembrete.strftime("%Y-%m-%d"),
+            "canal": "TELEGRAM",
+            "status": "PENDENTE",
+        }
+
+        sucesso = inserir_alerta(payload)
+
+        if not sucesso:
+            st.error("Não foi possível salvar o alerta.")
+            return
+
         st.session_state["force_reset"] += 1
-
         st.success("✅ Alerta salvo com sucesso!")
 
-        # Retorna para o dashboard após o cadastro.
         st.session_state["menu"] = "📊 Dashboard"
         st.rerun()

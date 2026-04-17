@@ -1,13 +1,12 @@
-# ====================== telas/dashboard.py ======================
-
 import pandas as pd
 import streamlit as st
 
 from services.database import (
+    carregar_alertas,
     carregar_categorias,
-    carregar_dados,
     carregar_departamentos,
-    conectar,
+    concluir_alerta,
+    excluir_alerta,
 )
 
 
@@ -17,7 +16,6 @@ def tela_dashboard():
     """
 
     # ===== ESTADO INICIAL =====
-    # Inicializa chaves usadas pela tela para evitar erros de Session State.
     if "reset_filtros" not in st.session_state:
         st.session_state["reset_filtros"] = False
 
@@ -43,15 +41,38 @@ def tela_dashboard():
         st.session_state["menu"] = "📊 Dashboard"
 
     # ===== CARREGAMENTO INICIAL =====
-    # Busca os dados e listas usadas pelos filtros.
-    df = carregar_dados()
+    df = carregar_alertas()
     departamentos = carregar_departamentos()
     categorias = carregar_categorias()
 
-    # Interrompe a renderização caso não existam dados.
     if df.empty:
         st.info("Nenhum dado encontrado para exibir no dashboard.")
         return
+
+    # ===== AJUSTES DE SEGURANÇA NOS DADOS =====
+    # Garante colunas esperadas para evitar quebra em filtros/exibição
+    colunas_esperadas = [
+        "id",
+        "departamento",
+        "categoria",
+        "descricao",
+        "observacoes",
+        "data_vencimento",
+        "data_lembrete",
+        "status",
+        "data_conclusao",
+        "data_ultimo_envio",
+        "canal",
+    ]
+
+    for coluna in colunas_esperadas:
+        if coluna not in df.columns:
+            df[coluna] = None
+
+    # Normaliza datas para filtro
+    for coluna_data in ["data_vencimento", "data_lembrete", "data_conclusao", "data_ultimo_envio"]:
+        if coluna_data in df.columns:
+            df[coluna_data] = pd.to_datetime(df[coluna_data], errors="coerce")
 
     # ===== FILTROS =====
     col1, col2, col3, col4 = st.columns(4)
@@ -86,7 +107,7 @@ def tela_dashboard():
     col5, col6 = st.columns(2)
 
     with col5:
-        Data_inicio = st.date_input(
+        data_inicio = st.date_input(
             "Data vencimento início",
             value=None,
             format="DD/MM/YYYY",
@@ -161,21 +182,22 @@ def tela_dashboard():
 
         with col1:
             if st.button("✅ Sim concluir"):
-                conn = conectar()
-                cursor = conn.cursor()
+                erros = 0
 
                 for alerta_id in st.session_state["selected_ids"]:
-                    cursor.execute(
-                        "UPDATE alertas_dev SET status='CONCLUIDO', data_conclusao=GETDATE() WHERE id=%s",
-                        (int(alerta_id),)
-                    )
-
-                conn.commit()
-                conn.close()
+                    ok = concluir_alerta(int(alerta_id))
+                    if not ok:
+                        erros += 1
 
                 st.session_state["selected_ids"] = []
+                st.session_state["selecionados_map"] = {}
                 st.session_state["confirm_concluir"] = False
-                st.success("Alertas concluídos!")
+
+                if erros == 0:
+                    st.success("Alertas concluídos!")
+                else:
+                    st.warning(f"{erros} alerta(s) não puderam ser concluídos.")
+
                 st.rerun()
 
         with col2:
@@ -190,21 +212,22 @@ def tela_dashboard():
 
         with col1:
             if st.button("✅ Sim excluir"):
-                conn = conectar()
-                cursor = conn.cursor()
+                erros = 0
 
                 for alerta_id in st.session_state["selected_ids"]:
-                    cursor.execute(
-                        "DELETE FROM alertas_dev WHERE id=%s",
-                        (int(alerta_id),)
-                    )
-
-                conn.commit()
-                conn.close()
+                    ok = excluir_alerta(int(alerta_id))
+                    if not ok:
+                        erros += 1
 
                 st.session_state["selected_ids"] = []
+                st.session_state["selecionados_map"] = {}
                 st.session_state["confirm_delete"] = False
-                st.success("Alertas excluídos!")
+
+                if erros == 0:
+                    st.success("Alertas excluídos!")
+                else:
+                    st.warning(f"{erros} alerta(s) não puderam ser excluídos.")
+
                 st.rerun()
 
         with col2:
@@ -213,37 +236,43 @@ def tela_dashboard():
 
     # ===== CONTROLE DE PESQUISA =====
     if not st.session_state["pesquisar"]:
-        st.info("Clique em pesquisar para visualizar os dados")
+        st.info("Clique em pesquisar para visualizar os dados.")
         return
 
     # ===== FILTRAGEM DOS DADOS =====
-    df = carregar_dados()
+    df_filtrado = df.copy()
 
     if departamento != "Todos":
-        df = df[df["departamento"] == departamento]
+        df_filtrado = df_filtrado[df_filtrado["departamento"] == departamento]
 
     if categoria != "Todos":
-        df = df[df["categoria"] == categoria]
+        df_filtrado = df_filtrado[df_filtrado["categoria"] == categoria]
 
     if status != "Todos":
-        df = df[df["status"] == status]
+        df_filtrado = df_filtrado[df_filtrado["status"] == status]
 
     if descricao:
-        df = df[df["descricao"].str.contains(descricao, case=False, na=False)]
+        df_filtrado = df_filtrado[
+            df_filtrado["descricao"].astype(str).str.contains(descricao, case=False, na=False)
+        ]
 
     if data_inicio:
-        df = df[df["data_vencimento"] >= pd.to_datetime(data_inicio)]
+        df_filtrado = df_filtrado[
+            df_filtrado["data_vencimento"] >= pd.to_datetime(data_inicio)
+        ]
 
     if data_fim:
-        df = df[df["data_vencimento"] <= pd.to_datetime(data_fim)]
+        df_filtrado = df_filtrado[
+            df_filtrado["data_vencimento"] <= pd.to_datetime(data_fim)
+        ]
 
-    if df.empty:
-        st.warning("Nenhum resultado encontrado")
+    if df_filtrado.empty:
+        st.warning("Nenhum resultado encontrado.")
         return
 
     # ===== PAGINAÇÃO =====
     page_size = 10
-    total_rows = len(df)
+    total_rows = len(df_filtrado)
     total_pages = max((total_rows - 1) // page_size + 1, 1)
 
     if st.session_state["page"] > total_pages:
@@ -252,9 +281,9 @@ def tela_dashboard():
     start = (st.session_state["page"] - 1) * page_size
     end = start + page_size
 
-    df_page = df.iloc[start:end].copy()
+    df_page = df_filtrado.iloc[start:end].copy()
 
-    # Formata apenas a copia usada na exibicao, preservando o DataFrame original para filtros e acoes.
+    # Formata datas só para exibição
     for coluna_data in ["data_vencimento", "data_lembrete", "data_conclusao", "data_ultimo_envio"]:
         if coluna_data in df_page.columns:
             df_page[coluna_data] = pd.to_datetime(df_page[coluna_data], errors="coerce").dt.strftime("%d/%m/%Y")
@@ -264,21 +293,41 @@ def tela_dashboard():
         lambda x: st.session_state["selecionados_map"].get(x, False)
     )
 
+    colunas_exibidas = [
+        "Selecionar",
+        "id",
+        "departamento",
+        "categoria",
+        "descricao",
+        "observacoes",
+        "data_vencimento",
+        "data_lembrete",
+        "status",
+        "data_conclusao",
+        "data_ultimo_envio",
+        "canal",
+    ]
+
+    colunas_exibidas = [col for col in colunas_exibidas if col in df_page.columns]
+
     edited_df = st.data_editor(
-        df_page,
+        df_page[colunas_exibidas],
         use_container_width=True,
         hide_index=True,
+        disabled=[col for col in colunas_exibidas if col != "Selecionar"],
         column_config={
             "id": None,
             "canal": None,
-        }
+            "Selecionar": st.column_config.CheckboxColumn("Selecionar"),
+        },
+        key=f"editor_dashboard_{st.session_state['page']}"
     )
 
-    # Atualiza o mapa de seleção com base na edição da tabela.
+    # Atualiza o mapa de seleção
     for _, row in edited_df.iterrows():
         st.session_state["selecionados_map"][row["id"]] = row["Selecionar"]
 
-    # Atualiza a lista consolidada de IDs selecionados.
+    # Atualiza IDs selecionados
     st.session_state["selected_ids"] = [
         id_
         for id_, selected in st.session_state["selecionados_map"].items()
@@ -292,7 +341,6 @@ def tela_dashboard():
         if st.button("⬅️ Anterior"):
             if st.session_state["page"] > 1:
                 st.session_state["page"] -= 1
-                st.session_state["selected_ids"] = []
                 st.rerun()
 
     with colp2:
@@ -305,7 +353,6 @@ def tela_dashboard():
         if st.button("Próxima ➡️"):
             if st.session_state["page"] < total_pages:
                 st.session_state["page"] += 1
-                st.session_state["selected_ids"] = []
                 st.rerun()
 
     st.markdown("---")
